@@ -1,0 +1,4 @@
+venv/
+faers.db
+__pycache__/
+*.pyc
