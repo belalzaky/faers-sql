@@ -1,4 +1,7 @@
-# build_db.py — fetch ~3000 FAERS reports from openFDA and load them into SQLite
+# build_db.py — fetch ~3300 FAERS reports from openFDA and load them into SQLite
+#               Lap 5: stratified by year (300 reports × 11 years, 2013–2023)
+#               so the year trend is spread across real calendar time instead
+#               of being a consecutive dump from a single year.
 #
 # ── What is a database? ───────────────────────────────────────────────────────
 #
@@ -28,36 +31,91 @@ import requests
 
 DB_FILE = "faers.db"
 
-# ── 1. Fetch ~3000 reports from openFDA ──────────────────────────────────────
+# ── 1. Fetch ~300 reports per year, 2013–2023 ────────────────────────────────
 #
-# The API returns at most 1000 results per call, so we make 3 calls and
-# combine them. The "skip" parameter tells the API how many results to
-# jump over before returning the next batch — like page numbers.
+# Old approach: skip=0,100,200,… with no filter → consecutive block of records
+# that all happened to be from 2014. Useless for a year-over-year trend.
+#
+# New approach: add a receivedate range filter for each year so we explicitly
+# request records spread across 11 different calendar years.
+#
+# URL structure:
+#   search=receivedate:[20190101+TO+20191231]
+#       ↳ only return reports whose receive date falls inside this year
+#   &limit=100&skip={skip}
+#       ↳ page through up to 300 results per year (3 pages × 100)
+#
+# With a search filter, the unauthenticated API allows up to 1000 per call,
+# but we keep limit=100 and take 3 pages so we don't hammer the free endpoint.
 
-# The unauthenticated openFDA API caps each request at 100 results when
-# there is no search filter. We page through 30 batches of 100 to reach 3,000.
-BASE_URL = (
-    "https://api.fda.gov/drug/event.json"
-    "?limit=100&skip={skip}"
-)
+YEARS      = range(2013, 2024)   # 2013 → 2023 inclusive
+PER_YEAR   = 300
+BATCH_SIZE = 100
 
-TOTAL_WANTED = 3000
-BATCH_SIZE   = 100
+# ── Retry-with-backoff helper ─────────────────────────────────────────────────
+#
+# What is retry-with-backoff?
+# ───────────────────────────
+# Real-world APIs are imperfect. Even a well-run free service like openFDA
+# will occasionally drop a connection, time out, or briefly rate-limit you.
+# If your code crashes on the first failure, a single blip wipes out all your
+# progress. Retry-with-backoff is the standard fix:
+#
+#   1. Try the request.
+#   2. If it fails, wait a short time and try again.
+#   3. Wait a bit longer each time (the "backoff") so you're not spamming
+#      a server that's already struggling.
+#   4. Give up after a fixed number of attempts.
+#
+# "Backoff" means the wait grows with each retry:
+#   attempt 1 fails → wait 2 s
+#   attempt 2 fails → wait 4 s
+#   attempt 3 fails → wait 8 s
+#   attempt 4 fails → give up and raise the error
+#
+# This is called "exponential backoff" because the wait doubles each time
+# (2^1, 2^2, 2^3 …). It's the industry-standard pattern for any code that
+# calls an external service.
 
-print("Fetching reports from openFDA…")
+def fetch_with_retry(url, max_attempts=4, timeout=20):
+    """GET url, retrying up to max_attempts times with exponential backoff."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = requests.get(url, timeout=timeout)
+            if resp.status_code == 404:
+                return None          # no results — not an error, just empty
+            resp.raise_for_status()  # raises on 4xx/5xx
+            return resp
+        except requests.RequestException as e:
+            if attempt == max_attempts:
+                raise               # out of retries — let it bubble up
+            wait = 2 ** attempt     # 2 s, 4 s, 8 s …
+            print(f"\n  ⚠ attempt {attempt} failed ({e}). Retrying in {wait}s…")
+            time.sleep(wait)
+
+# ─────────────────────────────────────────────────────────────────────────────
+
+print("Fetching reports from openFDA (300 per year, 2013–2023)…\n")
 all_reports = []
 
-for skip in range(0, TOTAL_WANTED, BATCH_SIZE):
-    resp = requests.get(BASE_URL.format(skip=skip), timeout=15)
-    resp.raise_for_status()
-    batch = resp.json()["results"]
-    all_reports.extend(batch)
-    print(f"  {len(all_reports):,} / {TOTAL_WANTED} reports fetched", end="\r")
-    time.sleep(0.3)   # be polite to the free API
+for year in YEARS:
+    year_reports = []
+    for skip in range(0, PER_YEAR, BATCH_SIZE):
+        url = (
+            "https://api.fda.gov/drug/event.json"
+            f"?search=receivedate:[{year}0101+TO+{year}1231]"
+            f"&limit={BATCH_SIZE}&skip={skip}"
+        )
+        resp = fetch_with_retry(url)
+        if resp is None:
+            break                    # fewer than PER_YEAR reports exist for this year
+        year_reports.extend(resp.json()["results"])
+        time.sleep(0.5)             # 0.5 s between requests — gentler on the API
+
+    all_reports.extend(year_reports)
+    print(f"  {year}: {len(year_reports):>3} reports  (total so far: {len(all_reports):,})")
 
 print(f"\nTotal reports fetched: {len(all_reports):,}")
-
-print(f"Total reports fetched: {len(all_reports)}")
 
 # ── 2. Flatten reports into rows ──────────────────────────────────────────────
 #
