@@ -2,8 +2,7 @@
 
 Learning SQL by querying the FDA Adverse Event Reporting System (FAERS) — the same public drug-safety dataset explored in [faers-explorer](https://github.com/belalzaky/faers-explorer), now loaded into a local SQLite database and queried with plain SQL. Each script introduces one new concept, building from a blank database to real analytical questions.
 
-> First-year Pharmacology student at King's College London, building data skills in public.
-> Write-ups: [belalzaky.substack.com](https://belalzaky.substack.com) · [LinkedIn](https://www.linkedin.com/in/belalzaky)
+> Pharmacology BSc at King's College London. Full write-up and interactive version: [belalzaky.uk](https://belalzaky.uk) · [Substack](https://belalzaky.substack.com) · [LinkedIn](https://www.linkedin.com/in/belalzaky)
 
 ---
 
